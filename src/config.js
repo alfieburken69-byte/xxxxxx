@@ -93,6 +93,7 @@ export const config = {
   rolimonsMinIntervalMs: num(process.env.ROLIMONS_MIN_INTERVAL_MS, 1800),
   rolimonsConcurrency: num(process.env.ROLIMONS_CONCURRENCY, 2),
   valueCacheMs: num(process.env.VALUE_CACHE_MINUTES, 60) * 60 * 1000,
+  maxPricePerScan: num(process.env.MAX_PRICE_PER_SCAN, 15),
 
   // Poster pacing
   postIntervalMs: num(process.env.POST_INTERVAL_MS, 2000),

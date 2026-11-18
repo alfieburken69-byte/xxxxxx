@@ -7,6 +7,7 @@ import {
   EmbedBuilder,
   Events,
   GatewayIntentBits,
+  MessageFlags,
   PermissionFlagsBits,
   SlashCommandBuilder,
 } from 'discord.js';
@@ -47,7 +48,7 @@ const rolimons = createRolimons({
 
 let client = null;
 let scanning = false;
-let scanStartedAt = 0;
+let shuttingDown = false;
 
 /* ------------------------------------------------------------------ render */
 
@@ -236,7 +237,27 @@ async function loadValue(userId) {
   return fresh;
 }
 
-const SCAN_TIMEOUT_MS = 4 * 60 * 1000;
+/**
+ * Sequential scheduler: the next scan starts only after this one finishes, plus
+ * the poll interval. Never overlaps, so the API budget is never split.
+ */
+async function scanLoop() {
+  while (!shuttingDown) {
+    const started = Date.now();
+    await scan().catch((err) => console.error('[scan]', err.message));
+
+    // If a scan ran long (throttling), give the API a breather rather than
+    // immediately queueing another expensive pass.
+    const elapsed = Date.now() - started;
+    const wait = Math.max(config.pollIntervalMs, 5000);
+
+    if (elapsed > config.pollIntervalMs) {
+      console.log(`[scan] took ${Math.round(elapsed / 1000)}s — waiting ${Math.round(wait / 1000)}s before next`);
+    }
+
+    await sleep(wait);
+  }
+}
 
 /**
  * DM everyone subscribed to a game that just showed up.
@@ -293,15 +314,12 @@ async function dispatchNotifications(built, games) {
 }
 
 async function scan() {
-  if (scanning) {
-    const stuckFor = Date.now() - scanStartedAt;
-    if (stuckFor < SCAN_TIMEOUT_MS) return;
-    // A scan has been wedged far too long — force it open again.
-    console.warn(`[scan] previous scan wedged for ${Math.round(stuckFor / 1000)}s, resetting`);
-  }
+  // Strictly one scan at a time. A previous version fired a new scan on a timer
+  // while one was still pricing, so two scans shared the API budget and kept
+  // each other permanently throttled.
+  if (scanning) return;
 
   scanning = true;
-  scanStartedAt = Date.now();
   const startedAt = Date.now();
 
   try {
@@ -334,26 +352,33 @@ async function scan() {
     const candidates = [];
     let onCooldown = 0;
 
-    // Load inventories in parallel; the limiter pool owns the rate budget so
-    // this stays inside Rolimon's ceiling regardless of how many run at once.
-    const entries = [...inGame];
+    // Cache hits are free, so sort by "needs an API call" last: players already
+    // known locally resolve instantly, and fresh lookups are capped per scan so
+    // one pass can't consume the whole rate budget.
+    const cachedFirst = [...inGame].sort((a, b) => {
+      const aCached = store.getValue(a[0], config.valueCacheMs) ? 0 : 1;
+      const bCached = store.getValue(b[0], config.valueCacheMs) ? 0 : 1;
+      return aCached - bCached;
+    });
+
+    const entries = cachedFirst.slice(0, config.maxPricePerScan);
+    const deferred = cachedFirst.length - entries.length;
     const values = new Array(entries.length);
     let cursor = 0;
 
     await Promise.all(
-      Array.from({ length: Math.min(4, entries.length) }, async () => {
+      Array.from({ length: Math.min(6, entries.length) }, async () => {
         while (cursor < entries.length) {
           const index = cursor++;
           const [userId] = entries[index];
           values[index] = await loadValue(userId).catch(() => null);
-
-          const done = index + 1;
-          if (done === entries.length || done % 5 === 0) {
-            console.log(`[scan] priced ${done}/${entries.length}`);
-          }
         }
       }),
     );
+
+    if (deferred > 0) {
+      console.log(`[scan] ${deferred} player(s) deferred to the next scan (rate budget)`);
+    }
 
     for (let i = 0; i < entries.length; i += 1) {
       const [userId, p] = entries[i];
@@ -526,7 +551,7 @@ async function handleCheck(interaction) {
 
 async function handleStart(interaction) {
   if (!canControl(interaction)) {
-    await interaction.reply({ content: 'You need **Manage Server** to control the tracker.', ephemeral: true });
+    await interaction.reply({ content: 'You need **Manage Server** to control the tracker.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -542,7 +567,7 @@ async function handleStart(interaction) {
 
 async function handleStop(interaction) {
   if (!canControl(interaction)) {
-    await interaction.reply({ content: 'You need **Manage Server** to control the tracker.', ephemeral: true });
+    await interaction.reply({ content: 'You need **Manage Server** to control the tracker.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -633,7 +658,7 @@ async function handleNotify(interaction) {
   if (!created) {
     await interaction.reply({
       content: `You already have a notification for **${entry.gameName}** to ${target}.`,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -656,7 +681,7 @@ async function handleNotify(interaction) {
       `Repeat window: **${config.notifyRepeatMs === 0 ? 'every sighting' : `${Math.round(config.notifyRepeatMs / 60000)} min`}**.` +
       `\nID: \`${entry.id}\`` +
       dmNote,
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -666,7 +691,7 @@ async function handleNotifyList(interaction) {
   );
 
   if (subs.length === 0) {
-    await interaction.reply({ content: 'No notifications set up yet. Use `/notify` to add one.', ephemeral: true });
+    await interaction.reply({ content: 'No notifications set up yet. Use `/notify` to add one.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -675,7 +700,7 @@ async function handleNotifyList(interaction) {
   );
   await interaction.reply({
     content: `${lines.join('\n')}\n\nRemove one with \`/notify remove id:<id>\`.`,
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -687,14 +712,14 @@ async function handleNotifyRemove(interaction) {
     .find((n) => n.id === id && (n.ownerId === interaction.user.id || canControl(interaction)));
 
   if (!accessible) {
-    await interaction.reply({ content: `No notification \`${id}\` that you can remove.`, ephemeral: true });
+    await interaction.reply({ content: `No notification \`${id}\` that you can remove.`, flags: MessageFlags.Ephemeral });
     return;
   }
 
   store.removeNotification(accessible.ownerId, id);
   store.save();
 
-  await interaction.reply({ content: `Removed notification \`${id}\` (**${accessible.gameName}**).`, ephemeral: true });
+  await interaction.reply({ content: `Removed notification \`${id}\` (**${accessible.gameName}**).`, flags: MessageFlags.Ephemeral });
 }
 
 async function handleStats(interaction) {
@@ -774,8 +799,7 @@ async function main() {
   if (config.dryRun) {
     console.log('[dry] no Discord connection, printing matches only\n');
     poster.startAll();
-    await scan();
-    setInterval(scan, config.pollIntervalMs);
+    scanLoop();
     return;
   }
 
@@ -833,12 +857,11 @@ async function main() {
     await registerCommands();
 
     console.log(
-      `[poster] started · one post every ${config.postIntervalMs / 1000}s · routing to ${BUCKETS.length} channels`,
+      `[poster] started · 1 per channel every ${config.postIntervalMs / 1000}s · ${BUCKETS.length} channels`,
     );
 
     poster.startAll();
-    await scan();
-    setInterval(scan, config.pollIntervalMs);
+    scanLoop();
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
@@ -874,13 +897,14 @@ async function main() {
       }
     } catch (err) {
       console.error(`[command] ${interaction.commandName}: ${err.message}`);
-      const reply = { content: `Something broke: ${err.message}`, ephemeral: true };
+      const reply = { content: `Something broke: ${err.message}`, flags: MessageFlags.Ephemeral };
       if (interaction.deferred || interaction.replied) await interaction.editReply(reply).catch(() => {});
       else await interaction.reply(reply).catch(() => {});
     }
   });
 
   const shutdown = () => {
+    shuttingDown = true;
     poster.alive = false;
     store.save();
     client.destroy();
