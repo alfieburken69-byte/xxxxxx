@@ -45,6 +45,7 @@ const rolimons = createRolimons({
   minIntervalMs: config.rolimonsMinIntervalMs,
   concurrency: config.rolimonsConcurrency,
   proxyUrls: config.proxyUrls,
+  rotating: config.rotatingProxy,
 });
 
 let client = null;

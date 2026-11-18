@@ -105,6 +105,9 @@ export const config = {
   rolimonsMinIntervalMs: num(process.env.ROLIMONS_MIN_INTERVAL_MS, 500),
   rolimonsConcurrency: num(process.env.ROLIMONS_CONCURRENCY, 3),
   proxyUrls: parseProxies(process.env.ROLIMONS_PROXIES),
+  // A rotating pool hands out a new IP per request, so per-IP limits don't apply
+  // and 429s are worth retrying instead of pausing on.
+  rotatingProxy: process.env.ROLIMONS_ROTATING_PROXY === '1',
   valueCacheMs: num(process.env.VALUE_CACHE_MINUTES, 120) * 60 * 1000,
   maxPricePerScan: num(process.env.MAX_PRICE_PER_SCAN, 40),
 

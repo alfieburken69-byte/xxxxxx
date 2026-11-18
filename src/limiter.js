@@ -16,6 +16,7 @@ export function createRolimonsClient({
   ProxyAgentClass = null,
   fetchImpl = fetch,
   label = 'rolimons',
+  rotating = false,
 } = {}) {
   const headers = {
     'user-agent':
@@ -55,6 +56,23 @@ export function createRolimonsClient({
   function slowDown(lane, retryAfter) {
     lane.consecutive429 += 1;
 
+    /**
+     * Rotating proxies hand out a new IP per request, so a 429 here came from an
+     * IP we will never use again. Pausing the lane would throw away the whole
+     * pool's capacity for one bad exit node — just retry and take the next IP.
+     */
+    if (rotating) {
+      const now = Date.now();
+      if (now - (lane.lastRotatingLog || 0) > 60000) {
+        lane.lastRotatingLog = now;
+        console.warn(
+          `[${label}] hitting 429s through the rotating pool — the provider may be ` +
+            `short on clean exit IPs, or concurrency is too high`,
+        );
+      }
+      return;
+    }
+
     if (lane.consecutive429 >= PENALTY_AFTER && !lane.penalised) {
       lane.penalised = true;
       lane.pausedUntil = Math.max(lane.pausedUntil, Date.now() + PENALTY_WAIT_MS);
@@ -93,7 +111,6 @@ export function createRolimonsClient({
   async function fetchWithRetry(url, lane) {
     for (let attempt = 0; attempt < 4; attempt += 1) {
       if (lane.penalised) throw new Error(`${label} rate-limited (lane paused)`);
-
       let res;
       try {
         res = await fetchImpl(url, {
@@ -108,10 +125,16 @@ export function createRolimonsClient({
 
       if (res.status === 429) {
         const retryAfter = Number(res.headers.get('retry-after')) || 5;
-        lane.pausedUntil = Math.max(lane.pausedUntil, Date.now() + Math.min(retryAfter, 20) * 1000);
         lane.throttles += 1;
+        // A rotating pool gets a new IP per attempt, so no point pausing on it.
+        if (!rotating) {
+          lane.pausedUntil = Math.max(
+            lane.pausedUntil,
+            Date.now() + Math.min(retryAfter, 20) * 1000,
+          );
+        }
         slowDown(lane, retryAfter);
-        await sleep(250);
+        await sleep(rotating ? 50 : 250);
         continue;
       }
 

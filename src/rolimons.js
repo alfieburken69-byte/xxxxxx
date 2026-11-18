@@ -5,11 +5,12 @@ const ITEM_CACHE_MS = 30 * 60 * 1000;
 const GAME_CACHE_MS = 60 * 60 * 1000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export function createRolimons({ minIntervalMs, concurrency, proxyUrls }) {
+export function createRolimons({ minIntervalMs, concurrency, proxyUrls, rotating }) {
   const get = createRolimonsClient({
     minIntervalMs,
     concurrency,
     proxyUrls,
+    rotating,
     ProxyAgentClass: ProxyAgent,
     // undici's fetch understands `dispatcher`; native fetch ignores it.
     fetchImpl: undiciFetch,
