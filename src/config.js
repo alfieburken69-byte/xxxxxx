@@ -74,6 +74,18 @@ const num0 = (value, fallback) => {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 };
 
+/**
+ * Proxies, comma or newline separated. Accepts http(s):// and socks5:// forms,
+ * with or without credentials:  http://user:pass@host:port
+ */
+const parseProxies = (raw) => {
+  if (!raw) return [];
+  return raw
+    .split(/[\s,]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+};
+
 /** True when the player's current server should be skipped entirely. */
 export function isBlockedGame(presence, game) {
   if (!presence) return false;
@@ -92,6 +104,7 @@ export const config = {
   pollIntervalMs: num(process.env.POLL_INTERVAL_SECONDS, 45) * 1000,
   rolimonsMinIntervalMs: num(process.env.ROLIMONS_MIN_INTERVAL_MS, 500),
   rolimonsConcurrency: num(process.env.ROLIMONS_CONCURRENCY, 3),
+  proxyUrls: parseProxies(process.env.ROLIMONS_PROXIES),
   valueCacheMs: num(process.env.VALUE_CACHE_MINUTES, 120) * 60 * 1000,
   maxPricePerScan: num(process.env.MAX_PRICE_PER_SCAN, 40),
 

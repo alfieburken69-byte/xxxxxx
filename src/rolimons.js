@@ -1,11 +1,20 @@
+import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { createRolimonsClient } from './limiter.js';
 
 const ITEM_CACHE_MS = 30 * 60 * 1000;
 const GAME_CACHE_MS = 60 * 60 * 1000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export function createRolimons({ minIntervalMs, concurrency }) {
-  const get = createRolimonsClient({ minIntervalMs, concurrency });
+export function createRolimons({ minIntervalMs, concurrency, proxyUrls }) {
+  const get = createRolimonsClient({
+    minIntervalMs,
+    concurrency,
+    proxyUrls,
+    ProxyAgentClass: ProxyAgent,
+    // undici's fetch understands `dispatcher`; native fetch ignores it.
+    fetchImpl: undiciFetch,
+    label: 'rolimons',
+  });
   let items = { at: 0, assets: new Map() };
   let games = { at: 0, list: [] };
 
@@ -128,5 +137,5 @@ export function createRolimons({ minIntervalMs, concurrency }) {
     throw lastError || new Error('Rolimons did not answer');
   }
 
-  return { getRecentAds, getPlayerValue, getGameList, warmup: getItemTable };
+  return { getRecentAds, getPlayerValue, getGameList, warmup: getItemTable, laneStats: get.stats };
 }

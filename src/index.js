@@ -44,6 +44,7 @@ const store = new Store(config.stateFile);
 const rolimons = createRolimons({
   minIntervalMs: config.rolimonsMinIntervalMs,
   concurrency: config.rolimonsConcurrency,
+  proxyUrls: config.proxyUrls,
 });
 
 let client = null;
@@ -735,6 +736,16 @@ async function handleStats(interaction) {
     `Poll: **${config.pollIntervalMs / 1000}s**`,
     `Notify subscriptions: **${store.listNotifications().length}**`,
   ];
+
+  const lanes = rolimons.laneStats();
+  const proxyCount = lanes.lanes.filter((l) => l.proxied).length;
+  if (proxyCount > 0) {
+    lines.push(
+      `Proxies: **${proxyCount}** active` +
+        ` (${lanes.lanes.map((l) => `${l.interval}ms`).join(' / ')})`,
+    );
+  }
+
   await interaction.reply({ content: lines.join('\n') });
 }
 
@@ -825,6 +836,16 @@ async function main() {
     console.log(
       `[bot] in ${ready.guilds.cache.size} server(s): ${[...ready.guilds.cache.values()].map((g) => g.name).join(', ')}`,
     );
+
+    if (config.proxyUrls.length > 0) {
+      const perLane = 60000 / config.rolimonsMinIntervalMs;
+      console.log(
+        `[proxy] ${config.proxyUrls.length} lane(s) — budget ~${Math.round(perLane * config.proxyUrls.length)} req/min ` +
+          `(${Math.round(perLane)} per lane)`,
+      );
+    } else {
+      console.log("[proxy] none configured — Rolimon's traffic comes from this server's IP");
+    }
 
     let missing = 0;
     for (const bucket of BUCKETS) {
