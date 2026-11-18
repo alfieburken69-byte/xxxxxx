@@ -51,6 +51,7 @@ export function buildPayload({ player, value, presence, game, avatar, bucket, ad
   const joinUrl =
     `https://www.roblox.com/games/start?placeId=${presence.placeId}` +
     `&gameInstanceId=${presence.gameId}`;
+  const gameUrl = `https://www.roblox.com/games/${presence.placeId}/`;
 
   const gameName = (game && game.name) || presence.lastLocation || 'a Roblox game';
 
@@ -75,6 +76,7 @@ export function buildPayload({ player, value, presence, game, avatar, bucket, ad
       { label: 'Profile', url: profileUrl },
       { label: "Rolimon's", url: rolimonsUrl },
       { label: 'Join server', url: joinUrl },
+      { label: 'Game page', url: gameUrl },
     ],
   };
 }

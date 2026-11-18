@@ -423,8 +423,8 @@ async function handleCheck(interaction) {
   const rap = value.rap.toLocaleString('en-US');
   const val = value.value.toLocaleString('en-US');
 
-  const presence = await getPresence([userId]).catch(() => new Map());
-  const state = presence.get(userId);
+  const snapshot = await getPresence([userId]).catch(() => new Map());
+  const state = snapshot.get(userId);
 
   if (!isJoinable(state)) {
     const reason =
