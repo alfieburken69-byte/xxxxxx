@@ -53,7 +53,6 @@ export const config = {
   valueCacheMs: num(process.env.VALUE_CACHE_MINUTES, 60) * 60 * 1000,
 
   // Poster pacing
-  postsPerChannel: num(process.env.POSTS_PER_CHANNEL, 5),
   postIntervalMs: num(process.env.POST_INTERVAL_MS, 2000),
   queueLimit: num(process.env.QUEUE_LIMIT, 60),
 

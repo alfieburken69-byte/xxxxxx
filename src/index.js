@@ -70,9 +70,14 @@ function toComponents(payload) {
  * out of one channel, POST_INTERVAL_MS apart, then it rotates to the next
  * channel and starts over. It never stops on its own — only /stop pauses it.
  */
+/**
+ * One global queue. Every POST_INTERVAL_MS it pops the next waiting player and
+ * sends it to whichever channel that player's bracket belongs to. No channel
+ * rotation, no per-channel batches — whatever it has, it sends, in order.
+ */
 class Poster {
   constructor() {
-    this.queues = new Map(BUCKETS.map((bucket) => [bucket.id, []]));
+    this.queue = [];
     this.pending = new Set();
     this.enabled = true;
     this.alive = true;
@@ -87,21 +92,18 @@ class Poster {
     const id = this.key(item);
     if (this.pending.has(id)) return false;
 
-    const queue = this.queues.get(item.bucketId);
-    if (!queue) return false;
-
-    if (queue.length >= config.queueLimit) {
-      const dropped = queue.shift();
+    if (this.queue.length >= config.queueLimit) {
+      const dropped = this.queue.shift();
       this.pending.delete(this.key(dropped));
     }
 
-    queue.push(item);
+    this.queue.push(item);
     this.pending.add(id);
     return true;
   }
 
   queueDepth() {
-    return [...this.queues.values()].reduce((total, queue) => total + queue.length, 0);
+    return this.queue.length;
   }
 
   async channel(bucket) {
@@ -140,7 +142,7 @@ class Poster {
   }
 
   clear() {
-    for (const queue of this.queues.values()) queue.length = 0;
+    this.queue.length = 0;
     this.pending.clear();
     return this;
   }
@@ -148,47 +150,38 @@ class Poster {
   async loop() {
     while (this.alive) {
       if (!this.enabled) {
-        await sleep(1000);
+        await sleep(500);
         continue;
       }
 
-      let worked = false;
-
-      for (const bucket of BUCKETS) {
-        if (!this.enabled || !this.alive) break;
-
-        const queue = this.queues.get(bucket.id);
-        let sentHere = 0;
-
-        while (sentHere < config.postsPerChannel) {
-          if (!this.enabled || !this.alive) break;
-
-          const item = queue.shift();
-          if (!item) break;
-
-          this.pending.delete(this.key(item));
-
-          try {
-            await this.send(bucket, item);
-            store.markPosted(item.userId, item.bucketId);
-            this.sent += 1;
-            worked = true;
-            sentHere += 1;
-
-            console.log(
-              `[post] ${item.username} · ${bucket.label} · RAP ${item.payload.fields[0].value} · ${item.payload.title}`,
-            );
-
-            await sleep(config.postIntervalMs);
-          } catch (err) {
-            console.error(`[post] ${item.username} failed: ${err.message}`);
-            await sleep(1000);
-          }
-        }
+      const item = this.queue.shift();
+      if (!item) {
+        await sleep(500);
+        continue;
       }
 
-      if (!worked) await sleep(1000);
+      this.pending.delete(this.key(item));
+
+      const bucket = BUCKETS.find((b) => b.id === item.bucketId);
+      if (!bucket) {
+        await sleep(100);
+        continue;
+      }
+
+      try {
+        await this.send(bucket, item);
+        store.markPosted(item.userId, item.bucketId);
+        this.sent += 1;
+
+        console.log(
+          `[post] ${item.username} · ${bucket.label} · RAP ${item.payload.fields[0].value} · ${item.payload.title}`,
+        );
+      } catch (err) {
+        console.error(`[post] ${item.username} failed: ${err.message}`);
+      }
+
       store.save();
+      await sleep(config.postIntervalMs);
     }
   }
 }
@@ -404,8 +397,8 @@ async function handleStart(interaction) {
 
   await interaction.reply({
     content: wasPaused
-      ? `Resumed. Queue holds **${poster.queueDepth()}** post(s), sending ${config.postsPerChannel} per channel every ${config.postIntervalMs / 1000}s.`
-      : `Already running. Queue holds **${poster.queueDepth()}** post(s).`,
+      ? `Resumed. **${poster.queueDepth()}** post(s) queued, sending one every ${config.postIntervalMs / 1000}s.`
+      : `Already running. **${poster.queueDepth()}** post(s) queued.`,
   });
 }
 
@@ -428,7 +421,7 @@ async function handleStats(interaction) {
     `Queue: **${poster.queueDepth()}**`,
     `Sent this session: **${poster.sent}**`,
     `Cached players: **${Object.keys(store.data.values).length}**`,
-    `Pacing: **${config.postsPerChannel}** per channel every **${config.postIntervalMs / 1000}s**`,
+    `Pacing: one post every **${config.postIntervalMs / 1000}s**`,
     `Cooldown: **${Math.round(config.postCooldownMs / 60000)} min**`,
     `Metric: **${config.metric}**`,
     `Poll: **${config.pollIntervalMs / 1000}s**`,
@@ -518,7 +511,7 @@ async function main() {
     await registerCommands();
 
     console.log(
-      `[poster] started · ${config.postsPerChannel} per channel · ${config.postIntervalMs / 1000}s apart · rotating ${BUCKETS.length} channels`,
+      `[poster] started · one post every ${config.postIntervalMs / 1000}s · routing to ${BUCKETS.length} channels`,
     );
 
     poster.loop();
