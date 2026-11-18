@@ -49,8 +49,8 @@ const num = (value, fallback) => {
 export const config = {
   token: process.env.DISCORD_TOKEN || '',
   pollIntervalMs: num(process.env.POLL_INTERVAL_SECONDS, 45) * 1000,
-  rolimonsMinIntervalMs: num(process.env.ROLIMONS_MIN_INTERVAL_MS, 300),
-  rolimonsConcurrency: num(process.env.ROLIMONS_CONCURRENCY, 6),
+  rolimonsMinIntervalMs: num(process.env.ROLIMONS_MIN_INTERVAL_MS, 1800),
+  rolimonsConcurrency: num(process.env.ROLIMONS_CONCURRENCY, 2),
   valueCacheMs: num(process.env.VALUE_CACHE_MINUTES, 20) * 60 * 1000,
 
   // Poster pacing

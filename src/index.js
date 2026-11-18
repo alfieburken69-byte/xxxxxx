@@ -209,7 +209,7 @@ async function loadValue(userId) {
   return fresh;
 }
 
-const SCAN_TIMEOUT_MS = 5 * 60 * 1000;
+const SCAN_TIMEOUT_MS = 90 * 1000;
 
 async function scan() {
   if (scanning) {
@@ -226,8 +226,6 @@ async function scan() {
   scanStartedAt = Date.now();
 
   try {
-    console.log('[scan] checking for new ads…');
-
     await rolimons.warmup().catch(() => {});
 
     const ads = await rolimons.getRecentAds();
@@ -239,17 +237,24 @@ async function scan() {
     const presence = await getPresence([...newest.keys()]);
     const inGame = [...presence.entries()].filter(([, p]) => isJoinable(p));
 
+    if (inGame.length === 0) {
+      console.log(`[scan] ${ads.length} ads · 0 in game · queue ${poster.queueDepth()}`);
+      return;
+    }
+
+    console.log(`[scan] ${ads.length} ads · ${inGame.length} in game · pricing inventories…`);
+
     const candidates = [];
     let onCooldown = 0;
 
-    // Load inventories in parallel. Sequentially this was ~40s per scan; the
-    // limiter pool is what keeps it inside Rolimon's rate budget.
+    // Load inventories in parallel; the limiter pool owns the rate budget so
+    // this stays inside Rolimon's ceiling regardless of how many run at once.
     const entries = [...inGame];
     const values = new Array(entries.length);
     let cursor = 0;
 
     await Promise.all(
-      Array.from({ length: Math.min(6, entries.length) }, async () => {
+      Array.from({ length: Math.min(4, entries.length) }, async () => {
         while (cursor < entries.length) {
           const index = cursor++;
           const [userId] = entries[index];
