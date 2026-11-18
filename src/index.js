@@ -11,7 +11,7 @@ import {
   SlashCommandBuilder,
 } from 'discord.js';
 
-import { BUCKETS, config } from './config.js';
+import { BUCKETS, config, isBlockedGame } from './config.js';
 import { buildPayload, matchesBucket, renderPlain } from './format.js';
 import { createRolimons } from './rolimons.js';
 import { getAvatars, getPresence, getUniverseDetails, resolveUserId } from './roblox.js';
@@ -235,14 +235,22 @@ async function scan() {
     }
 
     const presence = await getPresence([...newest.keys()]);
-    const inGame = [...presence.entries()].filter(([, p]) => isJoinable(p));
+    const live = [...presence.entries()].filter(([, p]) => isJoinable(p));
+    const inGame = live.filter(([, p]) => !isBlockedGame(p, null));
+    const skipped = live.length - inGame.length;
 
     if (inGame.length === 0) {
-      console.log(`[scan] ${ads.length} ads · 0 in game · queue ${poster.queueDepth()}`);
+      console.log(
+        `[scan] ${ads.length} ads · 0 in game${skipped > 0 ? ` · ${skipped} in blocked games` : ''} · queue ${poster.queueDepth()}`,
+      );
       return;
     }
 
-    console.log(`[scan] ${ads.length} ads · ${inGame.length} in game · pricing inventories…`);
+    console.log(
+      `[scan] ${ads.length} ads · ${inGame.length} in game${
+        skipped > 0 ? ` (${skipped} blocked)` : ''
+      } · pricing inventories…`,
+    );
 
     const candidates = [];
     let onCooldown = 0;
@@ -303,8 +311,15 @@ async function scan() {
       getAvatars(ready.map((c) => c.userId)),
     ]);
 
+    // Second pass now that real game names are known — catches renamed AFK farms
+    // that the placeId / lastLocation check missed.
+    const allowed = ready.filter(
+      (c) => !isBlockedGame(c.presence, games.get(c.presence.universeId)),
+    );
+    const blocked = ready.length - allowed.length;
+
     let queued = 0;
-    for (const candidate of ready) {
+    for (const candidate of allowed) {
       const payload = buildPayload({
         player: candidate.player,
         value: candidate.value,
@@ -327,7 +342,9 @@ async function scan() {
     }
 
     console.log(
-      `[scan] ${ads.length} ads · ${inGame.length} in game · ${ready.length} matched · ${queued} queued · queue ${poster.queueDepth()}`,
+      `[scan] ${ads.length} ads · ${inGame.length} in game · ${ready.length} matched${
+        blocked > 0 ? ` · ${blocked} in blocked games` : ''
+      } · ${queued} queued · queue ${poster.queueDepth()}`,
     );
   } catch (err) {
     console.error('[scan]', err.message);

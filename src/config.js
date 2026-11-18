@@ -41,10 +41,45 @@ export const BUCKETS = [
   },
 ];
 
+/**
+ * Games whose players are never worth posting.
+ *
+ * Most trade-ad traffic comes from people parked in "Post Rolimon Trade Ads
+ * While AFK" — they sit there on purpose, so they show up as in-game forever and
+ * drown out people actually playing something. Matched against both the place ID
+ * (stable, survives renames) and the name (lowercase substring).
+ */
+export const BLOCKED_GAMES = {
+  placeIds: new Set([
+    14090982817, // Post Rolimon Trade Ads While AFK
+    85474607833668, // its alternate place behind the same universe
+  ]),
+  names: [
+    'rolimon trade ads',
+    'rolimons trade ads',
+    'post rolimon',
+    'afk trading',
+    'trade ads while afk',
+  ],
+};
+
 const num = (value, fallback) => {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
+
+/** True when the player's current server should be skipped entirely. */
+export function isBlockedGame(presence, game) {
+  if (!presence) return false;
+
+  if (BLOCKED_GAMES.placeIds.has(Number(presence.placeId))) return true;
+
+  const texts = [game && game.name, presence.lastLocation]
+    .filter(Boolean)
+    .map((text) => String(text).toLowerCase());
+
+  return texts.some((text) => BLOCKED_GAMES.names.some((needle) => text.includes(needle)));
+}
 
 export const config = {
   token: process.env.DISCORD_TOKEN || '',
