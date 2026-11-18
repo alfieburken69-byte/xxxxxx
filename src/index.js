@@ -38,6 +38,7 @@ const rolimons = createRolimons({ minIntervalMs: config.rolimonsMinIntervalMs })
 
 let client = null;
 let scanning = false;
+let scanStartedAt = 0;
 
 /* ------------------------------------------------------------------ render */
 
@@ -212,11 +213,25 @@ async function loadValue(userId) {
   return fresh;
 }
 
+const SCAN_TIMEOUT_MS = 5 * 60 * 1000;
+
 async function scan() {
-  if (scanning) return;
+  if (scanning) {
+    const stuckFor = Date.now() - scanStartedAt;
+    if (stuckFor < SCAN_TIMEOUT_MS) {
+      console.log(`[scan] previous scan still running (${Math.round(stuckFor / 1000)}s), skipping`);
+      return;
+    }
+    // A scan has been wedged far too long — force it open again.
+    console.warn(`[scan] previous scan wedged for ${Math.round(stuckFor / 1000)}s, resetting`);
+  }
+
   scanning = true;
+  scanStartedAt = Date.now();
 
   try {
+    console.log('[scan] checking for new ads…');
+
     await rolimons.warmup().catch(() => {});
 
     const ads = await rolimons.getRecentAds();

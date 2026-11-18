@@ -9,7 +9,7 @@ Any 1 GB box works. The whole process idles around 60–90 MB RAM.
 | File | Use |
 |---|---|
 | `deploy/rolimons-tracker.service` | systemd unit — best for a plain VPS |
-| `deploy/ecosystem.config.cjs` | pm2 config, if you prefer pm2 |
+| `ecosystem.config.cjs` | pm2 config (use this if you run pm2 instead) |
 | `Dockerfile` + `docker-compose.yml` | container route |
 | `start.bat` | Windows double-click launcher |
 
@@ -130,7 +130,7 @@ If you'd rather not use systemd:
 ```bash
 sudo npm install -g pm2
 cd /opt/rolimons-tracker
-pm2 start deploy/ecosystem.config.cjs
+pm2 start ecosystem.config.cjs
 pm2 save
 pm2 startup      # run the command it prints
 pm2 logs rolimons-tracker

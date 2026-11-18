@@ -25,9 +25,11 @@ export function createRolimonsClient({ minIntervalMs = 1300 } = {}) {
 
       let res;
       try {
-        res = await fetch(url, { headers });
+        // Hard timeout: without this a stalled connection hangs the caller
+        // forever, which used to freeze the whole scan loop.
+        res = await fetch(url, { headers, signal: AbortSignal.timeout(20000) });
       } catch {
-        // Dropped connection / DNS blip — back off and try again.
+        // Dropped connection, DNS blip or timeout — back off and try again.
         await sleep(800 * (attempt + 1));
         continue;
       }
