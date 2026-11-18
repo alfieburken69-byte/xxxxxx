@@ -13,6 +13,45 @@ Any 1 GB box works. The whole process idles around 60–90 MB RAM.
 | `Dockerfile` + `docker-compose.yml` | container route |
 | `start.bat` | Windows double-click launcher |
 
+## Updating a running install
+
+The repo is already a git repository with one commit. Push it once, then every
+future change is `git pull` on the box instead of a file transfer.
+
+**First time — from Windows:**
+
+```powershell
+cd "C:\Users\johns\Documents\Default Project\rolimons-tracker"
+git remote add origin https://github.com/YOURUSER/roblox-tracker.git
+git branch -M main
+git push -u origin main
+```
+
+**On the VPS, convert the existing folder into a checkout:**
+
+```bash
+cd /root/faggots
+git init
+git remote add origin https://github.com/YOURUSER/roblox-tracker.git
+git fetch origin
+git reset --hard origin/main
+```
+
+`git reset --hard` replaces the source files but leaves `.env` and `data/`
+untouched, because both are gitignored.
+
+**Every update after that:**
+
+```bash
+cd /root/faggots
+git pull
+npm install --omit=dev    # only needed when package.json changes
+sudo systemctl restart rolimons-tracker
+```
+
+If the repo is private, use a deploy key or a personal access token in the
+remote URL. Never commit `.env` — it holds the bot token.
+
 ## Option A — systemd (recommended)
 
 Ubuntu 22.04 / 24.04 / Debian 12.
