@@ -2,8 +2,8 @@ import { createRolimonsClient } from './limiter.js';
 
 const ITEM_CACHE_MS = 30 * 60 * 1000;
 
-export function createRolimons({ minIntervalMs }) {
-  const get = createRolimonsClient({ minIntervalMs });
+export function createRolimons({ minIntervalMs, concurrency }) {
+  const get = createRolimonsClient({ minIntervalMs, concurrency });
   let items = { at: 0, assets: new Map() };
 
   async function getItemTable() {

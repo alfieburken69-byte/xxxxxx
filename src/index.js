@@ -34,7 +34,10 @@ const isJoinable = (presence) =>
   presence.universeId;
 
 const store = new Store(config.stateFile);
-const rolimons = createRolimons({ minIntervalMs: config.rolimonsMinIntervalMs });
+const rolimons = createRolimons({
+  minIntervalMs: config.rolimonsMinIntervalMs,
+  concurrency: config.rolimonsConcurrency,
+});
 
 let client = null;
 let scanning = false;
@@ -239,8 +242,25 @@ async function scan() {
     const candidates = [];
     let onCooldown = 0;
 
-    for (const [userId, p] of inGame) {
-      const value = await loadValue(userId);
+    // Load inventories in parallel. Sequentially this was ~40s per scan; the
+    // limiter pool is what keeps it inside Rolimon's rate budget.
+    const entries = [...inGame];
+    const values = new Array(entries.length);
+    let cursor = 0;
+
+    await Promise.all(
+      Array.from({ length: Math.min(6, entries.length) }, async () => {
+        while (cursor < entries.length) {
+          const index = cursor++;
+          const [userId] = entries[index];
+          values[index] = await loadValue(userId).catch(() => null);
+        }
+      }),
+    );
+
+    for (let i = 0; i < entries.length; i += 1) {
+      const [userId, p] = entries[i];
+      const value = values[i];
       if (!value) continue;
 
       for (const bucket of BUCKETS) {

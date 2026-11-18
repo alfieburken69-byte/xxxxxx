@@ -48,15 +48,16 @@ const num = (value, fallback) => {
 
 export const config = {
   token: process.env.DISCORD_TOKEN || '',
-  pollIntervalMs: num(process.env.POLL_INTERVAL_SECONDS, 120) * 1000,
-  rolimonsMinIntervalMs: num(process.env.ROLIMONS_MIN_INTERVAL_MS, 1300),
-  valueCacheMs: num(process.env.VALUE_CACHE_MINUTES, 60) * 60 * 1000,
+  pollIntervalMs: num(process.env.POLL_INTERVAL_SECONDS, 45) * 1000,
+  rolimonsMinIntervalMs: num(process.env.ROLIMONS_MIN_INTERVAL_MS, 300),
+  rolimonsConcurrency: num(process.env.ROLIMONS_CONCURRENCY, 6),
+  valueCacheMs: num(process.env.VALUE_CACHE_MINUTES, 20) * 60 * 1000,
 
   // Poster pacing
   postIntervalMs: num(process.env.POST_INTERVAL_MS, 2000),
   queueLimit: num(process.env.QUEUE_LIMIT, 60),
 
-  postCooldownMs: num(process.env.POST_COOLDOWN_MINUTES, 90) * 60 * 1000,
+  postCooldownMs: num(process.env.POST_COOLDOWN_MINUTES, 20) * 60 * 1000,
   topItems: Math.min(num(process.env.TOP_ITEMS, 5), 10),
 
   statusChannelId: process.env.STATUS_CHANNEL_ID || null,
