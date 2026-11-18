@@ -19,6 +19,12 @@ import { Store } from './store.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Permissions the bot needs in each bracket channel. */
+const REQUIRED_PERMS = ['ViewChannel', 'SendMessages', 'EmbedLinks'];
+
+/** Channels that failed with Missing Permissions, so we stop retrying them. */
+const brokenChannels = new Set();
+
 /** Bump when the cached player value shape changes, to force one refetch. */
 const VALUE_SCHEMA = 2;
 
@@ -121,6 +127,10 @@ class Poster {
       return;
     }
 
+    if (brokenChannels.has(bucket.channelId)) {
+      throw new Error(`skipped: no permission in #${bucket.id}`);
+    }
+
     const channel = await this.channel(bucket);
     if (!channel) throw new Error(`channel ${bucket.channelId} not reachable`);
 
@@ -137,6 +147,20 @@ class Poster {
           await sleep(wait);
           continue;
         }
+
+        // 50013 = Missing Permissions. Report exactly what's missing, once.
+        if (err.code === 50013) {
+          const perms = channel.permissionsFor(client.user);
+          const missing = REQUIRED_PERMS.filter((perm) => !perms || !perms.has(perm));
+          brokenChannels.add(bucket.channelId);
+          console.error(
+            `[perm] #${bucket.label} (${bucket.channelId}) denied. Missing: ${
+              missing.length > 0 ? missing.join(', ') : 'all appear granted — check the bot role is not timed out'
+            }. Skipping this channel until restart.`,
+          );
+          throw new Error('missing permissions');
+        }
+
         throw err;
       }
     }
@@ -209,21 +233,19 @@ async function loadValue(userId) {
   return fresh;
 }
 
-const SCAN_TIMEOUT_MS = 90 * 1000;
+const SCAN_TIMEOUT_MS = 4 * 60 * 1000;
 
 async function scan() {
   if (scanning) {
     const stuckFor = Date.now() - scanStartedAt;
-    if (stuckFor < SCAN_TIMEOUT_MS) {
-      console.log(`[scan] previous scan still running (${Math.round(stuckFor / 1000)}s), skipping`);
-      return;
-    }
+    if (stuckFor < SCAN_TIMEOUT_MS) return;
     // A scan has been wedged far too long — force it open again.
     console.warn(`[scan] previous scan wedged for ${Math.round(stuckFor / 1000)}s, resetting`);
   }
 
   scanning = true;
   scanStartedAt = Date.now();
+  const startedAt = Date.now();
 
   try {
     await rolimons.warmup().catch(() => {});
@@ -267,6 +289,11 @@ async function scan() {
           const index = cursor++;
           const [userId] = entries[index];
           values[index] = await loadValue(userId).catch(() => null);
+
+          const done = index + 1;
+          if (done === entries.length || done % 5 === 0) {
+            console.log(`[scan] priced ${done}/${entries.length}`);
+          }
         }
       }),
     );
@@ -342,9 +369,11 @@ async function scan() {
     }
 
     console.log(
-      `[scan] ${ads.length} ads · ${inGame.length} in game · ${ready.length} matched${
-        blocked > 0 ? ` · ${blocked} in blocked games` : ''
-      } · ${queued} queued · queue ${poster.queueDepth()}`,
+      `[scan] ${ads.length} ads · ${inGame.length} in game${
+        skipped > 0 ? ` (${skipped} blocked)` : ''
+      } · ${ready.length} matched${
+        blocked > 0 ? ` (+${blocked} blocked)` : ''
+      } · ${queued} queued · ${Math.round((Date.now() - startedAt) / 1000)}s`,
     );
   } catch (err) {
     console.error('[scan]', err.message);
@@ -536,18 +565,29 @@ async function main() {
     let missing = 0;
     for (const bucket of BUCKETS) {
       const channel = await ready.channels.fetch(bucket.channelId).catch(() => null);
+
       if (!channel) {
         missing += 1;
         console.warn(`[warn] ${bucket.label}: channel ${bucket.channelId} not reachable`);
+        continue;
+      }
+
+      const perms = channel.permissionsFor(ready.user);
+      const lacking = REQUIRED_PERMS.filter((perm) => !perms || !perms.has(perm));
+
+      if (lacking.length > 0) {
+        missing += 1;
+        brokenChannels.add(bucket.channelId);
+        console.warn(`[warn] ${bucket.label} (${bucket.channelId}): missing ${lacking.join(', ')}`);
       }
     }
 
     if (missing > 0) {
       console.warn(
-        `[warn] ${missing}/${BUCKETS.length} channels unreachable — check View Channel + Send Messages + Embed Links.`,
+        `[warn] ${missing}/${BUCKETS.length} channels unusable — give the bot View Channel + Send Messages + Embed Links in them.`,
       );
     } else {
-      console.log(`[bot] all ${BUCKETS.length} bracket channels reachable`);
+      console.log(`[bot] all ${BUCKETS.length} bracket channels ready`);
     }
 
     await registerCommands();
