@@ -1,0 +1,22 @@
+[Unit]
+Description=Rolimon's Presence Tracker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rolimons
+WorkingDirectory=/opt/rolimons-tracker
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/rolimons-tracker.log
+StandardError=append:/var/log/rolimons-tracker.log
+Environment=NODE_ENV=production
+
+# hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
