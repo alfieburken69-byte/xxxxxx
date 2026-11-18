@@ -75,18 +75,13 @@ function toComponents(payload) {
 /* ------------------------------------------------------------------ poster */
 
 /**
- * Drains a per-bucket queue on a fixed rhythm: up to POSTS_PER_CHANNEL messages
- * out of one channel, POST_INTERVAL_MS apart, then it rotates to the next
- * channel and starts over. It never stops on its own — only /stop pauses it.
- */
-/**
- * One global queue. Every POST_INTERVAL_MS it pops the next waiting player and
- * sends it to whichever channel that player's bracket belongs to. No channel
- * rotation, no per-channel batches — whatever it has, it sends, in order.
+ * One queue per bracket channel, each drained by its own independent loop:
+ * every POST_INTERVAL_MS that channel sends its next queued player, forever.
+ * A channel with nothing waiting just idles — it never blocks the others.
  */
 class Poster {
   constructor() {
-    this.queue = [];
+    this.queues = new Map(BUCKETS.map((bucket) => [bucket.id, []]));
     this.pending = new Set();
     this.enabled = true;
     this.alive = true;
@@ -101,18 +96,25 @@ class Poster {
     const id = this.key(item);
     if (this.pending.has(id)) return false;
 
-    if (this.queue.length >= config.queueLimit) {
-      const dropped = this.queue.shift();
+    const queue = this.queues.get(item.bucketId);
+    if (!queue) return false;
+
+    if (queue.length >= config.queueLimit) {
+      const dropped = queue.shift();
       this.pending.delete(this.key(dropped));
     }
 
-    this.queue.push(item);
+    queue.push(item);
     this.pending.add(id);
     return true;
   }
 
   queueDepth() {
-    return this.queue.length;
+    return [...this.queues.values()].reduce((total, queue) => total + queue.length, 0);
+  }
+
+  depthFor(bucketId) {
+    return (this.queues.get(bucketId) || []).length;
   }
 
   async channel(bucket) {
@@ -169,31 +171,28 @@ class Poster {
   }
 
   clear() {
-    this.queue.length = 0;
+    for (const queue of this.queues.values()) queue.length = 0;
     this.pending.clear();
     return this;
   }
 
-  async loop() {
+  /** One independent loop per channel — each sends every POST_INTERVAL_MS. */
+  async loopFor(bucket) {
+    const queue = this.queues.get(bucket.id);
+
     while (this.alive) {
       if (!this.enabled) {
         await sleep(500);
         continue;
       }
 
-      const item = this.queue.shift();
+      const item = queue.shift();
       if (!item) {
-        await sleep(500);
+        await sleep(200);
         continue;
       }
 
       this.pending.delete(this.key(item));
-
-      const bucket = BUCKETS.find((b) => b.id === item.bucketId);
-      if (!bucket) {
-        await sleep(100);
-        continue;
-      }
 
       try {
         await this.send(bucket, item);
@@ -210,6 +209,10 @@ class Poster {
       store.save();
       await sleep(config.postIntervalMs);
     }
+  }
+
+  startAll() {
+    for (const bucket of BUCKETS) this.loopFor(bucket);
   }
 }
 
@@ -234,6 +237,60 @@ async function loadValue(userId) {
 }
 
 const SCAN_TIMEOUT_MS = 4 * 60 * 1000;
+
+/**
+ * DM everyone subscribed to a game that just showed up.
+ * Matching is by place ID when the subscription has one, otherwise by
+ * case-insensitive name substring.
+ */
+async function dispatchNotifications(built, games) {
+  if (config.dryRun) return;
+
+  const subs = store.listNotifications();
+  if (subs.length === 0 || built.length === 0) return;
+
+  const dmUsers = new Map();
+  let fired = 0;
+
+  for (const { candidate, payload } of built) {
+    const game = games.get(candidate.presence.universeId);
+    const gameName = (game && game.name) || candidate.presence.lastLocation || '';
+    const placeId = Number(candidate.presence.placeId);
+
+    for (const sub of subs) {
+      if (fired >= config.notifyMaxPerScan) return;
+
+      const matches = sub.placeId
+        ? sub.placeId === placeId
+        : gameName.toLowerCase().includes(String(sub.gameName).toLowerCase());
+
+      if (!matches) continue;
+      if (store.wasNotified(sub.id, candidate.userId, config.notifyRepeatMs)) continue;
+
+      try {
+        const user = dmUsers.get(sub.targetId) || (await client.users.fetch(sub.targetId));
+        dmUsers.set(sub.targetId, user);
+
+        await user.send({
+          content: `**${candidate.player.username}** is in **${gameName}** right now.`,
+          embeds: [toEmbed(payload)],
+          components: toComponents(payload),
+        });
+
+        store.markNotified(sub.id, candidate.userId);
+        fired += 1;
+        console.log(`[notify] DM'd ${user.tag} about ${candidate.player.username} in ${gameName}`);
+      } catch (err) {
+        console.error(
+          `[notify] could not DM ${sub.targetId} (they may have DMs off): ${err.message}`,
+        );
+        store.markNotified(sub.id, candidate.userId);
+      }
+    }
+  }
+
+  if (fired > 0) store.save();
+}
 
 async function scan() {
   if (scanning) {
@@ -346,6 +403,8 @@ async function scan() {
     const blocked = ready.length - allowed.length;
 
     let queued = 0;
+    const built = [];
+
     for (const candidate of allowed) {
       const payload = buildPayload({
         player: candidate.player,
@@ -366,7 +425,12 @@ async function scan() {
       });
 
       if (accepted) queued += 1;
+      built.push({ candidate, payload });
     }
+
+    await dispatchNotifications(built, games).catch((err) =>
+      console.error('[notify]', err.message),
+    );
 
     console.log(
       `[scan] ${ads.length} ads · ${inGame.length} in game${
@@ -411,7 +475,10 @@ async function handleCheck(interaction) {
   try {
     value = await loadValue(userId);
   } catch (err) {
-    await interaction.editReply(`Could not read that inventory: ${err.message}`);
+    await interaction.editReply(
+      `Rolimon's is rate limiting me right now, so I couldn't read that inventory. Try again in a minute.\n` +
+        `-# ${err.message}`,
+    );
     return;
   }
 
@@ -486,16 +553,162 @@ async function handleStop(interaction) {
   });
 }
 
+/* ------------------------------------------------------- /notify handlers */
+
+/** Rank games for autocomplete: exact prefix first, then substring, then popularity. */
+async function autocompleteGames(focused) {
+  let list;
+  try {
+    list = await rolimons.getGameList();
+  } catch {
+    return [];
+  }
+
+  const query = focused.trim().toLowerCase();
+  if (!query) return list.slice(0, 25).map(toChoice);
+
+  const scored = [];
+  for (const game of list) {
+    const name = game.name.toLowerCase();
+    let score = -1;
+
+    if (name === query) score = 0;
+    else if (name.startsWith(query)) score = 1;
+    else if (name.includes(query)) score = 2;
+
+    if (score >= 0) scored.push({ game, score });
+  }
+
+  scored.sort((a, b) => a.score - b.score || b.game.playing - a.game.playing);
+  return scored.slice(0, 25).map(({ game }) => toChoice(game));
+}
+
+function toChoice(game) {
+  return {
+    name: `${game.name.slice(0, 90)} · ${game.playing.toLocaleString('en-US')} playing`,
+    value: String(game.placeId),
+  };
+}
+
+async function handleNotify(interaction) {
+  const raw = interaction.options.getString('game', true).trim();
+  const target = interaction.options.getUser('user', true);
+
+  let gameName = raw;
+  let placeId = null;
+
+  if (/^\d+$/.test(raw)) {
+    placeId = Number(raw);
+    try {
+      const list = await rolimons.getGameList();
+      const found = list.find((g) => g.placeId === placeId);
+      if (found) gameName = found.name;
+    } catch {
+      // Name is cosmetic; the place ID is what actually matches.
+    }
+  } else {
+    try {
+      const list = await rolimons.getGameList();
+      const found = list.find((g) => g.name.toLowerCase() === raw.toLowerCase());
+      if (found) {
+        placeId = found.placeId;
+        gameName = found.name;
+      }
+    } catch {
+      // Fall back to matching on the typed name at scan time.
+    }
+  }
+
+  const { created, entry } = store.addNotification({
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    ownerId: interaction.user.id,
+    targetId: target.id,
+    gameName,
+    placeId,
+  });
+
+  store.save();
+
+  if (!created) {
+    await interaction.reply({
+      content: `You already have a notification for **${entry.gameName}** to ${target}.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  // Ask for DMs up front so a closed-inbox failure isn't silent later.
+  let dmNote = '';
+  try {
+    const dm = await target.createDM();
+    await dm.send(
+      `Notifications for **${gameName}** are now on. I'll message you here whenever someone with a bracket-worthy inventory is spotted in that game.`,
+    );
+  } catch {
+    dmNote =
+      `\n\n⚠️ I could not DM ${target} — they need **Allow direct messages from server members** enabled, or a shared server.`;
+  }
+
+  await interaction.reply({
+    content:
+      `Done. I'll DM ${target} whenever **${gameName}**${placeId ? ` (place ${placeId})` : ''} shows up.\n` +
+      `Repeat window: **${config.notifyRepeatMs === 0 ? 'every sighting' : `${Math.round(config.notifyRepeatMs / 60000)} min`}**.` +
+      `\nID: \`${entry.id}\`` +
+      dmNote,
+    ephemeral: true,
+  });
+}
+
+async function handleNotifyList(interaction) {
+  const subs = store.listNotifications(interaction.guildId).filter(
+    (n) => n.ownerId === interaction.user.id || canControl(interaction),
+  );
+
+  if (subs.length === 0) {
+    await interaction.reply({ content: 'No notifications set up yet. Use `/notify` to add one.', ephemeral: true });
+    return;
+  }
+
+  const lines = subs.map(
+    (n) => `\`${n.id}\` · **${n.gameName}** → <@${n.targetId}>`,
+  );
+  await interaction.reply({
+    content: `${lines.join('\n')}\n\nRemove one with \`/notify remove id:<id>\`.`,
+    ephemeral: true,
+  });
+}
+
+async function handleNotifyRemove(interaction) {
+  const id = interaction.options.getString('id', true).trim();
+
+  const accessible = store
+    .listNotifications(interaction.guildId)
+    .find((n) => n.id === id && (n.ownerId === interaction.user.id || canControl(interaction)));
+
+  if (!accessible) {
+    await interaction.reply({ content: `No notification \`${id}\` that you can remove.`, ephemeral: true });
+    return;
+  }
+
+  store.removeNotification(accessible.ownerId, id);
+  store.save();
+
+  await interaction.reply({ content: `Removed notification \`${id}\` (**${accessible.gameName}**).`, ephemeral: true });
+}
+
 async function handleStats(interaction) {
+  const perChannel = BUCKETS.map((b) => `#${b.id}: ${poster.depthFor(b.id)}`).join(' · ');
   const lines = [
     `Status: **${poster.enabled ? 'running' : 'paused'}**`,
-    `Queue: **${poster.queueDepth()}**`,
+    `Queue: **${poster.queueDepth()}** (${perChannel})`,
     `Sent this session: **${poster.sent}**`,
     `Cached players: **${Object.keys(store.data.values).length}**`,
-    `Pacing: one post every **${config.postIntervalMs / 1000}s**`,
-    `Cooldown: **${Math.round(config.postCooldownMs / 60000)} min**`,
+    `Pacing: **1 per channel every ${config.postIntervalMs / 1000}s**`,
+    `Cooldown: **${config.postCooldownMs === 0 ? 'none' : `${Math.round(config.postCooldownMs / 60000)} min`}**`,
     `Metric: **${config.metric}**`,
     `Poll: **${config.pollIntervalMs / 1000}s**`,
+    `Notify subscriptions: **${store.listNotifications().length}**`,
   ];
   await interaction.reply({ content: lines.join('\n') });
 }
@@ -507,6 +720,33 @@ async function registerCommands() {
       .setDescription('Look up a player and show their RAP, value, limiteds and current game')
       .addStringOption((option) =>
         option.setName('player').setDescription('Roblox username or user ID').setRequired(true),
+      ),
+    new SlashCommandBuilder()
+      .setName('notify')
+      .setDescription('DM someone when a chosen game shows up in the tracker')
+      .addSubcommand((sub) =>
+        sub
+          .setName('add')
+          .setDescription('Watch a game and DM a member when it appears')
+          .addStringOption((option) =>
+            option
+              .setName('game')
+              .setDescription('Start typing a game name, or paste a place ID')
+              .setRequired(true)
+              .setAutocomplete(true),
+          )
+          .addUserOption((option) =>
+            option.setName('user').setDescription('Who to DM').setRequired(true),
+          ),
+      )
+      .addSubcommand((sub) => sub.setName('list').setDescription('Show your notifications'))
+      .addSubcommand((sub) =>
+        sub
+          .setName('remove')
+          .setDescription('Delete a notification')
+          .addStringOption((option) =>
+            option.setName('id').setDescription('ID shown by /notify list').setRequired(true),
+          ),
       ),
     new SlashCommandBuilder().setName('start').setDescription('Resume automatic posting'),
     new SlashCommandBuilder().setName('stop').setDescription('Pause automatic posting'),
@@ -533,7 +773,7 @@ async function registerCommands() {
 async function main() {
   if (config.dryRun) {
     console.log('[dry] no Discord connection, printing matches only\n');
-    poster.loop();
+    poster.startAll();
     await scan();
     setInterval(scan, config.pollIntervalMs);
     return;
@@ -596,12 +836,29 @@ async function main() {
       `[poster] started · one post every ${config.postIntervalMs / 1000}s · routing to ${BUCKETS.length} channels`,
     );
 
-    poster.loop();
+    poster.startAll();
     await scan();
     setInterval(scan, config.pollIntervalMs);
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
+    // Autocomplete for /notify add game:
+    if (interaction.isAutocomplete()) {
+      const focused = interaction.options.getFocused(true);
+
+      if (interaction.commandName === 'notify' && focused.name === 'game') {
+        try {
+          const choices = await autocompleteGames(String(focused.value || ''));
+          await interaction.respond(choices);
+        } catch {
+          await interaction.respond([]).catch(() => {});
+        }
+      } else {
+        await interaction.respond([]).catch(() => {});
+      }
+      return;
+    }
+
     if (!interaction.isChatInputCommand()) return;
 
     try {
@@ -609,6 +866,12 @@ async function main() {
       else if (interaction.commandName === 'start') await handleStart(interaction);
       else if (interaction.commandName === 'stop') await handleStop(interaction);
       else if (interaction.commandName === 'stats') await handleStats(interaction);
+      else if (interaction.commandName === 'notify') {
+        const sub = interaction.options.getSubcommand();
+        if (sub === 'add') await handleNotify(interaction);
+        else if (sub === 'list') await handleNotifyList(interaction);
+        else if (sub === 'remove') await handleNotifyRemove(interaction);
+      }
     } catch (err) {
       console.error(`[command] ${interaction.commandName}: ${err.message}`);
       const reply = { content: `Something broke: ${err.message}`, ephemeral: true };

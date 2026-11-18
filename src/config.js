@@ -68,6 +68,12 @@ const num = (value, fallback) => {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
 
+/** Like num(), but an explicit 0 is a valid value (used for "no cooldown"). */
+const num0 = (value, fallback) => {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+};
+
 /** True when the player's current server should be skipped entirely. */
 export function isBlockedGame(presence, game) {
   if (!presence) return false;
@@ -86,13 +92,17 @@ export const config = {
   pollIntervalMs: num(process.env.POLL_INTERVAL_SECONDS, 45) * 1000,
   rolimonsMinIntervalMs: num(process.env.ROLIMONS_MIN_INTERVAL_MS, 1800),
   rolimonsConcurrency: num(process.env.ROLIMONS_CONCURRENCY, 2),
-  valueCacheMs: num(process.env.VALUE_CACHE_MINUTES, 20) * 60 * 1000,
+  valueCacheMs: num(process.env.VALUE_CACHE_MINUTES, 60) * 60 * 1000,
 
   // Poster pacing
   postIntervalMs: num(process.env.POST_INTERVAL_MS, 2000),
-  queueLimit: num(process.env.QUEUE_LIMIT, 60),
+  queueLimit: num(process.env.QUEUE_LIMIT, 200),
 
-  postCooldownMs: num(process.env.POST_COOLDOWN_MINUTES, 20) * 60 * 1000,
+  // Notifications
+  notifyRepeatMs: num(process.env.NOTIFY_REPEAT_MINUTES, 60) * 60 * 1000,
+  notifyMaxPerScan: num(process.env.NOTIFY_MAX_PER_SCAN, 10),
+
+  postCooldownMs: num0(process.env.POST_COOLDOWN_MINUTES, 0) * 60 * 1000,
   topItems: Math.min(num(process.env.TOP_ITEMS, 5), 10),
 
   statusChannelId: process.env.STATUS_CHANNEL_ID || null,

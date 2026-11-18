@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 export class Store {
   constructor(fileUrl) {
     this.file = fileURLToPath(fileUrl);
-    this.data = { values: {}, posts: {} };
+    this.data = { values: {}, posts: {}, notifications: [], notified: {} };
     this.dirty = false;
     this.load();
   }
@@ -17,6 +17,8 @@ export class Store {
       this.data = {
         values: parsed.values || {},
         posts: parsed.posts || {},
+        notifications: parsed.notifications || [],
+        notified: parsed.notified || {},
       };
     } catch {
       // First run, or the file was removed — start clean.
@@ -72,7 +74,62 @@ export class Store {
         changed = true;
       }
     }
+    for (const [key, at] of Object.entries(this.data.notified)) {
+      if (at < cutoff) {
+        delete this.data.notified[key];
+        changed = true;
+      }
+    }
 
     if (changed) this.dirty = true;
+  }
+
+  /* ---------------------------------------------------------- notifications */
+
+  listNotifications(guildId) {
+    return this.data.notifications.filter((n) => !guildId || n.guildId === guildId);
+  }
+
+  addNotification({ guildId, channelId, ownerId, targetId, gameName, placeId }) {
+    const existing = this.data.notifications.find(
+      (n) => n.ownerId === ownerId && n.targetId === targetId && n.placeId === placeId,
+    );
+    if (existing) return { created: false, entry: existing };
+
+    const entry = {
+      id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      guildId,
+      channelId,
+      ownerId,
+      targetId,
+      gameName,
+      placeId: placeId || null,
+      createdAt: Date.now(),
+    };
+
+    this.data.notifications.push(entry);
+    this.dirty = true;
+    return { created: true, entry };
+  }
+
+  removeNotification(ownerId, id) {
+    const before = this.data.notifications.length;
+    this.data.notifications = this.data.notifications.filter(
+      (n) => !(n.id === id && n.ownerId === ownerId),
+    );
+    const removed = this.data.notifications.length !== before;
+    if (removed) this.dirty = true;
+    return removed;
+  }
+
+  /** True when this subscription already fired for this player recently. */
+  wasNotified(subId, playerId, repeatMs) {
+    const at = this.data.notified[`${subId}:${playerId}`];
+    return Boolean(at) && Date.now() - at < repeatMs;
+  }
+
+  markNotified(subId, playerId) {
+    this.data.notified[`${subId}:${playerId}`] = Date.now();
+    this.dirty = true;
   }
 }
